@@ -15,7 +15,7 @@ from groq import Groq
 # ── Config ────────────────────────────────────────────────────────────────────
 
 EMBED_MODEL  = "all-MiniLM-L6-v2"
-GROQ_MODEL   = "llama-3.1-70b-versatile"
+GROQ_MODEL   = "llama-3.3-70b-versatile"
 VERSION      = "2026.2"
 TOP_K        = 6
 MAX_HOPS     = 3
