@@ -113,6 +113,14 @@ def build_context(chunks: list[dict]) -> str:
 
 # ── Multi-hop RAG ─────────────────────────────────────────────────────────────
 
+def _save_rate_limit_headers(headers):
+    st.session_state["rl_remaining_req"]    = headers.get("x-ratelimit-remaining-requests", "—")
+    st.session_state["rl_remaining_tok"]    = headers.get("x-ratelimit-remaining-tokens",   "—")
+    st.session_state["rl_limit_req"]        = headers.get("x-ratelimit-limit-requests",     "1000")
+    st.session_state["rl_limit_tok"]        = headers.get("x-ratelimit-limit-tokens",       "—")
+    st.session_state["rl_reset_req"]        = headers.get("x-ratelimit-reset-requests",     "")
+
+
 def llm_call(prompt: str) -> str:
     client = get_groq()
     resp = client.chat.completions.create(
@@ -121,6 +129,10 @@ def llm_call(prompt: str) -> str:
         max_tokens=300,
         temperature=0.1,
     )
+    try:
+        _save_rate_limit_headers(resp._response.headers)
+    except Exception:
+        pass
     return resp.choices[0].message.content.strip()
 
 
@@ -248,6 +260,17 @@ with st.sidebar:
     for q in examples:
         if st.button(q, use_container_width=True, key=q):
             st.session_state.pending_question = q
+    st.divider()
+    st.markdown("**API Usage Today**")
+    rem_req = st.session_state.get("rl_remaining_req", "—")
+    lim_req = st.session_state.get("rl_limit_req", "1,000")
+    rem_tok = st.session_state.get("rl_remaining_tok", "—")
+    lim_tok = st.session_state.get("rl_limit_tok", "—")
+    reset   = st.session_state.get("rl_reset_req", "")
+    st.caption(f"Requests: **{rem_req}** / {lim_req} remaining")
+    st.caption(f"Tokens: **{rem_tok}** / {lim_tok} remaining")
+    if reset:
+        st.caption(f"Resets in: {reset}")
     st.divider()
     st.caption(f"3,200 pages · 45,853 chunks · STEP {VERSION}")
     if st.button("🗑 Clear chat", use_container_width=True):
