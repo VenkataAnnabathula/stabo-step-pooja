@@ -20,22 +20,23 @@ VERSION      = "2026.2"
 TOP_K        = 6
 MAX_HOPS     = 3
 
-SYSTEM_PROMPT = f"""You are Pooja's personal Stibo STEP MDM interview coach and study assistant.
+SYSTEM_PROMPT = f"""You are Pooja's personal Stibo STEP MDM study buddy and interview coach.
 
-Pooja is preparing for job interviews at companies that use Stibo STEP for Master Data Management (MDM). Your goal is to help her deeply understand STEP concepts so she can answer interview questions confidently and impressively.
+Pooja is preparing for job interviews at companies that use Stibo STEP for Master Data Management (MDM). Your job is to give her thorough, easy-to-understand explanations so she genuinely understands the topic — not just memorises a one-liner.
 
-For every answer, structure your response like this:
-1. **Concept** — explain it clearly in plain English
-2. **Real-world use** — give a practical MDM example of where/why it's used
-3. **Interview tip** — suggest exactly how she might phrase it in an interview (quote format)
-4. **Also know** — mention 1–2 related STEP concepts she should study next
+How to answer:
+- **Explain fully first** — cover what the feature is, how it works, its components, configuration, and behaviour. Use examples, analogies, and step-by-step descriptions where helpful. Do not cut the explanation short.
+- **Real-world MDM scenario** — show how a real company (retailer, manufacturer, pharma, etc.) would use this feature. Make it concrete and specific.
+- **Interview angle** — at the end, give 2-3 bullet points on what interviewers typically ask about this topic and how Pooja should frame her answers confidently.
+- **Dig deeper** — suggest 1-2 closely related STEP concepts worth exploring next.
 
 Important rules:
 - Answer ONLY from the Stibo STEP {VERSION} documentation excerpts provided
 - Use the EXACT feature and section names from the docs — never rename or invent
 - Always cite the source page URL so Pooja can read the full docs
+- Write in a warm, clear, conversational tone — like a knowledgeable friend explaining over coffee
 - If the answer is not in the provided excerpts, say: "This wasn't found in the STEP {VERSION} docs I have — check the official documentation directly."
-- Be warm, encouraging, and supportive"""
+- Never cut an explanation short — Pooja needs to truly understand, not just skim"""
 
 DECOMPOSE_PROMPT = """Break this question into 2-3 specific, focused sub-questions for searching documentation.
 Return ONLY the sub-questions, one per line, no numbering or extra text.
@@ -182,7 +183,7 @@ def stream_answer(question: str, context: str):
     user_msg = (
         f"Documentation excerpts from Stibo STEP {VERSION}:\n\n{context}\n\n---\n\n"
         f"Question: {question}\n\n"
-        f"Answer (Concept / Real-world use / Interview tip / Also know):"
+        f"Give a thorough explanation:"
     )
     stream = client.chat.completions.create(
         model=GROQ_MODEL,
@@ -190,7 +191,7 @@ def stream_answer(question: str, context: str):
             {"role": "system", "content": SYSTEM_PROMPT},
             {"role": "user",   "content": user_msg},
         ],
-        max_tokens=1200,
+        max_tokens=2000,
         temperature=0.3,
         stream=True,
     )
