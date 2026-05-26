@@ -6,7 +6,6 @@ No local Ollama needed — runs fully on Streamlit Community Cloud.
 
 import os
 import json
-import time
 import numpy as np
 import faiss
 import streamlit as st
@@ -19,7 +18,6 @@ EMBED_MODEL  = "all-MiniLM-L6-v2"
 GROQ_MODEL   = "llama-3.3-70b-versatile"
 VERSION      = "2026.2"
 TOP_K        = 4
-MAX_HOPS     = 2
 
 SYSTEM_PROMPT = f"""You are Pooja's personal Stibo STEP MDM study buddy and interview coach.
 
@@ -38,15 +36,6 @@ Important rules:
 - Write in a warm, clear, conversational tone — like a knowledgeable friend explaining over coffee
 - If the answer is not in the provided excerpts, say: "This wasn't found in the STEP {VERSION} docs I have — check the official documentation directly."
 - Never cut an explanation short — Pooja needs to truly understand, not just skim"""
-
-DECOMPOSE_PROMPT = """Break this question into 2-3 specific, focused sub-questions for searching documentation.
-Return ONLY the sub-questions, one per line, no numbering or extra text.
-Question: {question}"""
-
-FOLLOWUP_PROMPT = """User asked: {question}
-Context gathered: {context}
-Is this context sufficient? If YES reply: SUFFICIENT
-If NO, write 1-2 short follow-up search queries (one per line)."""
 
 
 # ── Load data (cached — runs once at startup) ─────────────────────────────────
@@ -75,15 +64,11 @@ def get_groq():
 
 # ── Retrieval ─────────────────────────────────────────────────────────────────
 
-def embed_query(text: str, model) -> np.ndarray:
-    vec = model.encode([text], normalize_embeddings=True).astype(np.float32)
-    return vec
-
-
-def retrieve_single(query: str, seen_urls: set, k: int = TOP_K) -> list[dict]:
+def retrieve(query: str) -> list[dict]:
     index, documents, metadatas, model = load_index()
-    vec = embed_query(query, model)
-    scores, idxs = index.search(vec, k * 3)
+    vec = model.encode([query], normalize_embeddings=True).astype(np.float32)
+    scores, idxs = index.search(vec, TOP_K * 3)
+    seen_urls: set[str] = set()
     chunks = []
     for score, idx in zip(scores[0], idxs[0]):
         if idx < 0:
@@ -92,12 +77,8 @@ def retrieve_single(query: str, seen_urls: set, k: int = TOP_K) -> list[dict]:
         url = meta.get("url", "")
         if url not in seen_urls and score >= 0.25:
             seen_urls.add(url)
-            chunks.append({
-                "text": documents[idx],
-                "meta": meta,
-                "similarity": float(score),
-            })
-        if len(chunks) >= k:
+            chunks.append({"text": documents[idx], "meta": meta, "similarity": float(score)})
+        if len(chunks) >= TOP_K:
             break
     return chunks
 
@@ -113,96 +94,7 @@ def build_context(chunks: list[dict]) -> str:
     return "\n\n---\n\n".join(parts)
 
 
-# ── Multi-hop RAG ─────────────────────────────────────────────────────────────
-
-def _save_rate_limit_headers(headers):
-    st.session_state["rl_remaining_req"]    = headers.get("x-ratelimit-remaining-requests", "—")
-    st.session_state["rl_remaining_tok"]    = headers.get("x-ratelimit-remaining-tokens",   "—")
-    st.session_state["rl_limit_req"]        = headers.get("x-ratelimit-limit-requests",     "1000")
-    st.session_state["rl_limit_tok"]        = headers.get("x-ratelimit-limit-tokens",       "—")
-    st.session_state["rl_reset_req"]        = headers.get("x-ratelimit-reset-requests",     "")
-
-
-def _parse_reset_time(err: RateLimitError) -> str:
-    """Extract human-readable reset time from the error message if present."""
-    try:
-        msg = str(err)
-        if "Please try again in" in msg:
-            return msg.split("Please try again in")[1].split(".")[0].strip()
-    except Exception:
-        pass
-    return ""
-
-
-def llm_call(prompt: str) -> str:
-    client = get_groq()
-    for attempt in range(4):
-        try:
-            resp = client.chat.completions.create(
-                model=GROQ_MODEL,
-                messages=[{"role": "user", "content": prompt}],
-                max_tokens=300,
-                temperature=0.1,
-            )
-            try:
-                _save_rate_limit_headers(resp._response.headers)
-            except Exception:
-                pass
-            return resp.choices[0].message.content.strip()
-        except RateLimitError as e:
-            is_daily = "tokens per day" in str(e) or "per day" in str(e)
-            if is_daily:
-                reset = _parse_reset_time(e)
-                msg = f"Daily token limit reached (100k/day on free tier)."
-                if reset:
-                    msg += f" Resets in **{reset}**."
-                st.error(msg)
-                st.stop()
-            if attempt < 3:
-                wait = 15 * (2 ** attempt)  # 15s → 30s → 60s
-                st.toast(f"⏳ Rate limit hit — waiting {wait}s before retry {attempt + 1}/3…")
-                time.sleep(wait)
-            else:
-                raise
-
-
-def decompose(question: str) -> list[str]:
-    raw = llm_call(DECOMPOSE_PROMPT.format(question=question))
-    lines = [l.strip("•-– ").strip() for l in raw.splitlines() if l.strip()]
-    return [question] + [l for l in lines if l.lower() != question.lower()][:3]
-
-
-def check_followup(question: str, context: str) -> list[str]:
-    raw = llm_call(FOLLOWUP_PROMPT.format(question=question, context=context[:2000]))
-    if "SUFFICIENT" in raw.upper():
-        return []
-    return [l.strip("•-– ").strip() for l in raw.splitlines()
-            if l.strip() and "SUFFICIENT" not in l.upper()][:2]
-
-
-def multihop_retrieve(question: str, status) -> tuple[list[dict], list[str]]:
-    all_chunks, seen_urls, hop_log = [], set(), []
-
-    status.markdown("🔍 **Hop 1** — Decomposing question…")
-    queries = decompose(question)
-    hop_log.append("**Hop 1:** " + " · ".join(f"`{q}`" for q in queries))
-    for q in queries:
-        all_chunks.extend(retrieve_single(q, seen_urls))
-
-    for hop in range(2, MAX_HOPS + 1):
-        if not all_chunks:
-            break
-        status.markdown(f"🔎 **Hop {hop}** — Checking coverage…")
-        followups = check_followup(question, build_context(all_chunks))
-        if not followups:
-            hop_log.append(f"**Hop {hop}:** Context sufficient.")
-            break
-        hop_log.append(f"**Hop {hop}:** " + " · ".join(f"`{q}`" for q in followups))
-        for q in followups:
-            all_chunks.extend(retrieve_single(q, seen_urls))
-
-    return all_chunks, hop_log
-
+# ── Answer ────────────────────────────────────────────────────────────────────
 
 def stream_answer(question: str, context: str):
     client = get_groq()
@@ -244,8 +136,6 @@ st.markdown("""
 .hero { text-align: center; padding: 0.5rem 0 0.2rem; }
 .hero h1 { font-size: 1.65rem; font-weight: 800; margin: 0; }
 .hero .sub { font-size: 0.85rem; color: #777; margin-top: 4px; }
-.hop-log { background:#f8faff; border-left:3px solid #5b8ef0;
-           padding:8px 14px; border-radius:4px; font-size:0.8rem; color:#444; margin-top:8px; }
 .src-card { background:#f4f7ff; border:1px solid #dde4f8; border-radius:8px;
             padding:8px 12px; margin:5px 0; font-size:0.82rem; }
 .src-card a { font-weight:600; color:#2c5fcc; text-decoration:none; }
@@ -258,7 +148,7 @@ st.markdown("""
 st.markdown(f"""
 <div class="hero">
   <h1>🎯 Stibo STEP {VERSION} — Interview Prep</h1>
-  <div class="sub">Built for <strong>Pooja</strong> · {VERSION} official docs · Multi-hop deep search · Powered by Llama 70B</div>
+  <div class="sub">Built for <strong>Pooja</strong> · {VERSION} official docs · Powered by Llama 70B</div>
 </div>
 """, unsafe_allow_html=True)
 
@@ -291,17 +181,6 @@ with st.sidebar:
         if st.button(q, use_container_width=True, key=q):
             st.session_state.pending_question = q
     st.divider()
-    st.markdown("**API Usage Today**")
-    rem_req = st.session_state.get("rl_remaining_req", "—")
-    lim_req = st.session_state.get("rl_limit_req", "1,000")
-    rem_tok = st.session_state.get("rl_remaining_tok", "—")
-    lim_tok = st.session_state.get("rl_limit_tok", "—")
-    reset   = st.session_state.get("rl_reset_req", "")
-    st.caption(f"Requests: **{rem_req}** / {lim_req} remaining")
-    st.caption(f"Tokens: **{rem_tok}** / {lim_tok} remaining")
-    if reset:
-        st.caption(f"Resets in: {reset}")
-    st.divider()
     st.caption(f"3,200 pages · 45,853 chunks · STEP {VERSION}")
     if st.button("🗑 Clear chat", use_container_width=True):
         st.session_state.messages = []
@@ -313,10 +192,6 @@ if "messages" not in st.session_state:
 for msg in st.session_state.messages:
     with st.chat_message(msg["role"]):
         st.markdown(msg["content"])
-        if msg.get("hop_log"):
-            with st.expander("🔍 Search hops", expanded=False):
-                for line in msg["hop_log"]:
-                    st.markdown(f'<div class="hop-log">{line}</div>', unsafe_allow_html=True)
         if msg.get("sources"):
             with st.expander(f"📄 {len(msg['sources'])} source page(s)", expanded=False):
                 for src in msg["sources"]:
@@ -338,22 +213,27 @@ if question:
 
     with st.chat_message("assistant"):
         status = st.empty()
-        chunks, hop_log = multihop_retrieve(question, status)
+        status.markdown("🔍 **Searching docs…**")
+        chunks = retrieve(question)
         context = build_context(chunks)
         status.markdown("✍️ **Composing your answer…**")
 
         answer_box = st.empty()
         full_answer = ""
-        for token in stream_answer(question, context):
-            full_answer += token
-            answer_box.markdown(full_answer + "▌")
+        try:
+            for token in stream_answer(question, context):
+                full_answer += token
+                answer_box.markdown(full_answer + "▌")
+        except RateLimitError as e:
+            msg = "Daily token limit reached (100k/day on free tier)."
+            if "Please try again in" in str(e):
+                reset = str(e).split("Please try again in")[1].split(".")[0].strip()
+                msg += f" Resets in **{reset}**."
+            st.error(msg)
+            st.stop()
+
         answer_box.markdown(full_answer)
         status.empty()
-
-        if hop_log:
-            with st.expander("🔍 Search hops", expanded=False):
-                for line in hop_log:
-                    st.markdown(f'<div class="hop-log">{line}</div>', unsafe_allow_html=True)
 
         seen, sources = set(), []
         for c in chunks:
@@ -378,6 +258,5 @@ if question:
                     )
 
     st.session_state.messages.append({
-        "role": "assistant", "content": full_answer,
-        "hop_log": hop_log, "sources": sources,
+        "role": "assistant", "content": full_answer, "sources": sources,
     })
