@@ -18,8 +18,8 @@ from groq import Groq, RateLimitError
 EMBED_MODEL  = "all-MiniLM-L6-v2"
 GROQ_MODEL   = "llama-3.3-70b-versatile"
 VERSION      = "2026.2"
-TOP_K        = 6
-MAX_HOPS     = 3
+TOP_K        = 4
+MAX_HOPS     = 2
 
 SYSTEM_PROMPT = f"""You are Pooja's personal Stibo STEP MDM study buddy and interview coach.
 
