@@ -123,6 +123,17 @@ def _save_rate_limit_headers(headers):
     st.session_state["rl_reset_req"]        = headers.get("x-ratelimit-reset-requests",     "")
 
 
+def _parse_reset_time(err: RateLimitError) -> str:
+    """Extract human-readable reset time from the error message if present."""
+    try:
+        msg = str(err)
+        if "Please try again in" in msg:
+            return msg.split("Please try again in")[1].split(".")[0].strip()
+    except Exception:
+        pass
+    return ""
+
+
 def llm_call(prompt: str) -> str:
     client = get_groq()
     for attempt in range(4):
@@ -138,7 +149,15 @@ def llm_call(prompt: str) -> str:
             except Exception:
                 pass
             return resp.choices[0].message.content.strip()
-        except RateLimitError:
+        except RateLimitError as e:
+            is_daily = "tokens per day" in str(e) or "per day" in str(e)
+            if is_daily:
+                reset = _parse_reset_time(e)
+                msg = f"Daily token limit reached (100k/day on free tier)."
+                if reset:
+                    msg += f" Resets in **{reset}**."
+                st.error(msg)
+                st.stop()
             if attempt < 3:
                 wait = 15 * (2 ** attempt)  # 15s → 30s → 60s
                 st.toast(f"⏳ Rate limit hit — waiting {wait}s before retry {attempt + 1}/3…")
