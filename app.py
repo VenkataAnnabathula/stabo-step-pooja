@@ -6,11 +6,12 @@ No local Ollama needed — runs fully on Streamlit Community Cloud.
 
 import os
 import json
+import time
 import numpy as np
 import faiss
 import streamlit as st
 from sentence_transformers import SentenceTransformer
-from groq import Groq
+from groq import Groq, RateLimitError
 
 # ── Config ────────────────────────────────────────────────────────────────────
 
@@ -124,17 +125,26 @@ def _save_rate_limit_headers(headers):
 
 def llm_call(prompt: str) -> str:
     client = get_groq()
-    resp = client.chat.completions.create(
-        model=GROQ_MODEL,
-        messages=[{"role": "user", "content": prompt}],
-        max_tokens=300,
-        temperature=0.1,
-    )
-    try:
-        _save_rate_limit_headers(resp._response.headers)
-    except Exception:
-        pass
-    return resp.choices[0].message.content.strip()
+    for attempt in range(4):
+        try:
+            resp = client.chat.completions.create(
+                model=GROQ_MODEL,
+                messages=[{"role": "user", "content": prompt}],
+                max_tokens=300,
+                temperature=0.1,
+            )
+            try:
+                _save_rate_limit_headers(resp._response.headers)
+            except Exception:
+                pass
+            return resp.choices[0].message.content.strip()
+        except RateLimitError:
+            if attempt < 3:
+                wait = 15 * (2 ** attempt)  # 15s → 30s → 60s
+                st.toast(f"⏳ Rate limit hit — waiting {wait}s before retry {attempt + 1}/3…")
+                time.sleep(wait)
+            else:
+                raise
 
 
 def decompose(question: str) -> list[str]:
